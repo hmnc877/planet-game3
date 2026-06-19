@@ -94,7 +94,7 @@
     </div>
     <div id="msgOverlay">
       <h1 id="msgTitle">惑星ブロック崩し</h1>
-      <p id="msgText">指で左右にドラッグしてパドルを操作。<br>星座のように散らばったブロックを全部壊そう。<br>壊すと中から惑星が現れる！</p>
+      <p id="msgText">指で左右にドラッグしてパドルを操作。<br>星座のように散らばったブロックを全部壊そう。<br>壊すと惑星が弾けて飛び散る！<br>たまにアイテムが落ちてくるよ。</p>
       <button id="startBtn">START</button>
     </div>
     <div id="hint">パドルをドラッグして操作</div>
@@ -140,13 +140,17 @@
   const playLeft = margin, playRight = W - margin, playTop = 60, playBottom = H - 16;
 
   // ---- Paddle ----
+  const paddleBaseW = 70;
   const paddle = {
-    w: 70, h: 12,
-    x: W/2 - 35, y: H - 70,
-    minX: playLeft, maxX: playRight - 70
+    w: paddleBaseW, h: 12,
+    x: W/2 - paddleBaseW/2, y: H - 70,
+    minX: playLeft, maxX: playRight - paddleBaseW
   };
 
-  // ---- Ball ----
+  // ---- Ball(s) ----
+  // `ball` is the primary ball (controls launch-from-paddle state). Extra
+  // balls from the multi-ball power-up live in `balls` and are simple
+  // physics bodies once spawned.
   function freshBall(){
     return {
       x: W/2, y: paddle.y - 14,
@@ -158,16 +162,131 @@
     };
   }
   let ball = freshBall();
+  let balls = []; // extra multi-ball companions (primary `ball` not included here)
 
-  // ---- Planet palette (revealed when a brick breaks) ----
-  const planetSkins = [
-    { color:'#ff5fa2', ring:false },
-    { color:'#4ad4ff', ring:true  },
-    { color:'#ffc94a', ring:false },
-    { color:'#6c4adb', ring:true  },
-    { color:'#36e2a0', ring:false },
-    { color:'#ff9f4a', ring:true  },
+  // ---- Level themes ----
+  // Each level cycles through a themed palette of "planets" so progressing
+  // feels like moving through different regions of space.
+  const themes = [
+    { name:'太陽系', bg:'#0a0e27', accent:'#ffc94a',
+      skins:[
+        { color:'#ff9f4a', ring:false }, // mercury/mars-ish
+        { color:'#ffd27a', ring:false }, // venus
+        { color:'#4ad4ff', ring:false }, // earth
+        { color:'#ff6b4a', ring:false }, // mars
+        { color:'#e8b06a', ring:true  }, // saturn
+        { color:'#c9915c', ring:true  }, // jupiter band
+      ]},
+    { name:'銀河', bg:'#120a27', accent:'#ff5fa2',
+      skins:[
+        { color:'#ff5fa2', ring:false },
+        { color:'#a85fff', ring:true  },
+        { color:'#6c4adb', ring:false },
+        { color:'#ff8ad1', ring:true  },
+        { color:'#7d5fff', ring:false },
+        { color:'#c45fff', ring:true  },
+      ]},
+    { name:'星雲', bg:'#06241f', accent:'#36e2a0',
+      skins:[
+        { color:'#36e2a0', ring:false },
+        { color:'#4affc4', ring:true  },
+        { color:'#1fb37e', ring:false },
+        { color:'#7dffd4', ring:false },
+        { color:'#2de0b0', ring:true  },
+        { color:'#5cffae', ring:false },
+      ]},
+    { name:'氷の領域', bg:'#0a1a27', accent:'#4ad4ff',
+      skins:[
+        { color:'#4ad4ff', ring:false },
+        { color:'#a0e8ff', ring:true  },
+        { color:'#7fc7ff', ring:false },
+        { color:'#cdf3ff', ring:false },
+        { color:'#5ab0e0', ring:true  },
+        { color:'#8fe0ff', ring:false },
+      ]},
   ];
+  function currentTheme(){
+    return themes[(level-1) % themes.length];
+  }
+
+  // ---- Particles (brick break fragments) ----
+  let particles = [];
+  function spawnParticles(x, y, color, count){
+    for(let i=0;i<count;i++){
+      const angle = Math.random()*Math.PI*2;
+      const speed = 1.5 + Math.random()*3.5;
+      particles.push({
+        x, y,
+        vx: Math.cos(angle)*speed,
+        vy: Math.sin(angle)*speed - 1, // slight upward bias
+        r: 1.5 + Math.random()*2,
+        color,
+        life: 1,
+        decay: 0.02 + Math.random()*0.02
+      });
+    }
+  }
+  function updateParticles(){
+    for(const p of particles){
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.12; // gravity
+      p.vx *= 0.98;
+      p.life -= p.decay;
+    }
+    particles = particles.filter(p => p.life > 0);
+  }
+  function drawParticles(){
+    for(const p of particles){
+      ctx.save();
+      ctx.globalAlpha = Math.max(p.life, 0);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // ---- Power-ups ----
+  // Falls from a broken brick; paddle catch activates its effect.
+  const POWERUP_TYPES = [
+    { id:'wide',  color:'#4ad4ff', label:'W' }, // wider paddle
+    { id:'multi', color:'#ffc94a', label:'M' }, // splits ball into 3
+    { id:'pierce',color:'#ff5fa2', label:'P' }, // ball pierces bricks for a while
+  ];
+  let powerups = []; // falling pickups: {x,y,type}
+  let paddleWideTimer = 0;
+  let pierceTimer = 0;
+
+  function maybeDropPowerup(x, y){
+    if(Math.random() < 0.18){
+      const type = POWERUP_TYPES[Math.floor(Math.random()*POWERUP_TYPES.length)];
+      powerups.push({ x, y, vy: 1.8, type });
+    }
+  }
+
+  function activatePowerup(type){
+    if(type.id === 'wide'){
+      paddleWideTimer = 480; // ~8s at 60fps
+    } else if(type.id === 'pierce'){
+      pierceTimer = 300; // ~5s
+    } else if(type.id === 'multi'){
+      const extras = [];
+      for(let i=0;i<2;i++){
+        const nb = freshBall();
+        nb.launched = true;
+        nb.x = ball.x; nb.y = ball.y;
+        const baseAngle = Math.atan2(ball.vy, ball.vx);
+        const spread = (i===0?-1:1) * 0.45;
+        const speed = Math.hypot(ball.vx, ball.vy) || 6;
+        nb.vx = Math.cos(baseAngle+spread)*speed;
+        nb.vy = Math.sin(baseAngle+spread)*speed;
+        extras.push(nb);
+      }
+      balls.push(...extras);
+    }
+  }
 
   // ---- Bricks: scattered constellation-style layout ----
   // Instead of a rigid grid, place bricks at irregular positions that still
@@ -194,7 +313,8 @@
         }
       }
       if(!ok) continue;
-      const skin = planetSkins[Math.floor(Math.random()*planetSkins.length)];
+      const theme = currentTheme();
+      const skin = theme.skins[Math.floor(Math.random()*theme.skins.length)];
       placed.push({
         x, y, w: brickW, h: brickH,
         alive: true,
@@ -291,6 +411,12 @@
 
   function resetBallOnPaddle(){
     ball = freshBall();
+    balls = [];
+    powerups = [];
+    paddleWideTimer = 0;
+    pierceTimer = 0;
+    paddle.w = paddleBaseW;
+    paddle.maxX = playRight - paddle.w;
   }
 
   function ballLost(){
@@ -322,83 +448,128 @@
     const dx = ball.x - cx, dy = ball.y - cy;
     const dist = Math.hypot(dx,dy);
     if(dist < ball.r){
-      // determine bounce axis by penetration depth
-      const overlapX = Math.min(ball.x + ball.r - b.x, b.x + b.w - (ball.x - ball.r));
-      const overlapY = Math.min(ball.y + ball.r - b.y, b.y + b.h - (ball.y - ball.r));
-      if(overlapX < overlapY){
-        ball.vx *= -1;
-        ball.x += ball.x < b.x + b.w/2 ? -overlapX : overlapX;
-      } else {
-        ball.vy *= -1;
-        ball.y += ball.y < b.y + b.h/2 ? -overlapY : overlapY;
+      if(pierceTimer <= 0){
+        // determine bounce axis by penetration depth
+        const overlapX = Math.min(ball.x + ball.r - b.x, b.x + b.w - (ball.x - ball.r));
+        const overlapY = Math.min(ball.y + ball.r - b.y, b.y + b.h - (ball.y - ball.r));
+        if(overlapX < overlapY){
+          ball.vx *= -1;
+          ball.x += ball.x < b.x + b.w/2 ? -overlapX : overlapX;
+        } else {
+          ball.vy *= -1;
+          ball.y += ball.y < b.y + b.h/2 ? -overlapY : overlapY;
+        }
       }
       return true;
     }
     return false;
   }
 
+  function stepBall(b, isPrimary){
+    b.x += b.vx;
+    b.y += b.vy;
+
+    b.trail.push({x:b.x, y:b.y});
+    if(b.trail.length > 12) b.trail.shift();
+
+    // walls
+    if(b.x - b.r < playLeft){ b.x = playLeft + b.r; b.vx *= -1; }
+    if(b.x + b.r > playRight){ b.x = playRight - b.r; b.vx *= -1; }
+    if(b.y - b.r < playTop){ b.y = playTop + b.r; b.vy *= -1; }
+
+    // paddle
+    if(b.vy > 0 &&
+       b.y + b.r > paddle.y && b.y + b.r < paddle.y + paddle.h + 10 &&
+       b.x > paddle.x - b.r && b.x < paddle.x + paddle.w + b.r){
+      b.y = paddle.y - b.r;
+      const hitPos = (b.x - (paddle.x + paddle.w/2)) / (paddle.w/2); // -1..1
+      const speed = Math.hypot(b.vx, b.vy);
+      const maxAngle = Math.PI/3;
+      const angle = hitPos * maxAngle;
+      b.vx = speed * Math.sin(angle);
+      b.vy = -Math.abs(speed * Math.cos(angle));
+      const newSpeed = Math.min(speed * 1.03, 11);
+      const s2 = Math.hypot(b.vx, b.vy);
+      b.vx = b.vx/s2*newSpeed;
+      b.vy = b.vy/s2*newSpeed;
+    }
+
+    // bricks
+    for(const brick of bricks){
+      if(!brick.alive) continue;
+      if(rectCircleCollide(brick, b)){
+        brick.hp--;
+        const theme = currentTheme();
+        if(brick.hp <= 0){
+          brick.alive = false;
+          brick.reveal = 1; // trigger planet pop animation
+          addScore(brick.skin.ring ? 150 : 100);
+          spawnParticles(brick.x+brick.w/2, brick.y+brick.h/2, brick.skin.color, 10);
+          maybeDropPowerup(brick.x+brick.w/2, brick.y+brick.h/2);
+        } else {
+          addScore(40);
+          spawnParticles(brick.x+brick.w/2, brick.y+brick.h/2, brick.skin.color, 4);
+        }
+        if(pierceTimer <= 0) break; // one brick per frame unless piercing
+      }
+    }
+
+    return b.y - b.r <= playBottom + 40; // still alive (hasn't fallen past bottom)
+  }
+
   function update(){
     if(!running) return;
+
+    // power-up timers
+    if(paddleWideTimer > 0){
+      paddleWideTimer--;
+      paddle.w = paddleBaseW * 1.5;
+      if(paddleWideTimer === 0) paddle.w = paddleBaseW;
+    }
+    if(pierceTimer > 0) pierceTimer--;
+    paddle.maxX = playRight - paddle.w;
+    if(paddle.x > paddle.maxX) paddle.x = paddle.maxX;
 
     if(!ball.launched){
       ball.x = paddle.x + paddle.w/2;
       ball.y = paddle.y - 14;
-      return;
-    }
-
-    ball.x += ball.vx;
-    ball.y += ball.vy;
-
-    ball.trail.push({x:ball.x, y:ball.y});
-    if(ball.trail.length > 12) ball.trail.shift();
-
-    // walls
-    if(ball.x - ball.r < playLeft){ ball.x = playLeft + ball.r; ball.vx *= -1; }
-    if(ball.x + ball.r > playRight){ ball.x = playRight - ball.r; ball.vx *= -1; }
-    if(ball.y - ball.r < playTop){ ball.y = playTop + ball.r; ball.vy *= -1; }
-
-    // paddle
-    if(ball.vy > 0 &&
-       ball.y + ball.r > paddle.y && ball.y + ball.r < paddle.y + paddle.h + 10 &&
-       ball.x > paddle.x - ball.r && ball.x < paddle.x + paddle.w + ball.r){
-      ball.y = paddle.y - ball.r;
-      // angle depends on where it hit the paddle
-      const hitPos = (ball.x - (paddle.x + paddle.w/2)) / (paddle.w/2); // -1..1
-      const speed = Math.hypot(ball.vx, ball.vy);
-      const maxAngle = Math.PI/3; // 60deg
-      const angle = hitPos * maxAngle;
-      ball.vx = speed * Math.sin(angle);
-      ball.vy = -Math.abs(speed * Math.cos(angle));
-      // slight speed increase to keep things lively, capped
-      const newSpeed = Math.min(speed * 1.03, 11);
-      const s2 = Math.hypot(ball.vx, ball.vy);
-      ball.vx = ball.vx/s2*newSpeed;
-      ball.vy = ball.vy/s2*newSpeed;
-    }
-
-    // bricks
-    for(const b of bricks){
-      if(!b.alive) continue;
-      if(rectCircleCollide(b, ball)){
-        b.hp--;
-        if(b.hp <= 0){
-          b.alive = false;
-          b.reveal = 1; // trigger planet pop animation
-          addScore(b.skin.ring ? 150 : 100);
+    } else {
+      const stillIn = stepBall(ball, true);
+      if(!stillIn){
+        // primary ball lost; if extra balls remain, promote one to primary
+        if(balls.length > 0){
+          ball = balls.shift();
         } else {
-          addScore(40);
+          ballLost();
+          return;
         }
-        break; // one brick per frame keeps response predictable
       }
     }
+
+    // extra balls
+    for(let i=balls.length-1; i>=0; i--){
+      const stillIn = stepBall(balls[i], false);
+      if(!stillIn) balls.splice(i,1);
+    }
+
     for(const b of bricks){
       if(b.reveal > 0) b.reveal = Math.max(0, b.reveal - 0.018);
     }
 
-    // lost
-    if(ball.y - ball.r > playBottom){
-      ballLost();
-      return;
+    updateParticles();
+
+    // falling power-up pickups
+    for(let i=powerups.length-1; i>=0; i--){
+      const p = powerups[i];
+      p.y += p.vy;
+      // caught by paddle?
+      if(p.y + 8 > paddle.y && p.y < paddle.y + paddle.h &&
+         p.x > paddle.x && p.x < paddle.x + paddle.w){
+        activatePowerup(p.type);
+        powerups.splice(i,1);
+        continue;
+      }
+      if(p.y > playBottom) powerups.splice(i,1);
     }
 
     // win check
@@ -525,13 +696,13 @@
     ctx.restore();
   }
 
-  function drawBall(){
-    for(let i=0;i<ball.trail.length;i++){
-      const t = ball.trail[i];
-      const alpha = (i/ball.trail.length)*0.4;
+  function drawBall(b){
+    for(let i=0;i<b.trail.length;i++){
+      const t = b.trail[i];
+      const alpha = (i/b.trail.length)*0.4;
       ctx.fillStyle = `rgba(255,201,74,${alpha})`;
       ctx.beginPath();
-      ctx.arc(t.x, t.y, ball.r*0.7, 0, Math.PI*2);
+      ctx.arc(t.x, t.y, b.r*0.7, 0, Math.PI*2);
       ctx.fill();
     }
     ctx.save();
@@ -539,9 +710,33 @@
     ctx.shadowBlur = 12;
     ctx.fillStyle = '#fff7d6';
     ctx.beginPath();
-    ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
     ctx.fill();
     ctx.restore();
+  }
+
+  function drawPowerups(){
+    for(const p of powerups){
+      ctx.save();
+      ctx.fillStyle = p.type.color;
+      ctx.shadowColor = p.type.color;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 9, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = '#0a0e27';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(p.type.label, p.x, p.y+3);
+      ctx.restore();
+    }
+  }
+
+  let bannerTimer = 0;
+  let bannerText = '';
+  function showBanner(text){
+    bannerText = text;
+    bannerTimer = 110;
   }
 
   function draw(){
@@ -549,8 +744,13 @@
     drawBounds();
     drawConstellation();
     for(const b of bricks) drawBrick(b);
+    drawParticles();
+    drawPowerups();
     drawPaddle();
-    if(running) drawBall();
+    if(running){
+      if(ball.launched) drawBall(ball);
+      for(const b of balls) drawBall(b);
+    }
 
     if(running && !ball.launched){
       ctx.save();
@@ -560,6 +760,40 @@
       ctx.fillText('TAP TO LAUNCH', W/2, paddle.y - 30);
       ctx.restore();
     }
+
+    if(pierceTimer > 0){
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,95,162,0.7)';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('PIERCE', playLeft+4, playTop-8);
+      ctx.restore();
+    }
+    if(paddleWideTimer > 0){
+      ctx.save();
+      ctx.fillStyle = 'rgba(74,212,255,0.7)';
+      ctx.font = 'bold 10px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('WIDE', playRight-4, playTop-8);
+      ctx.restore();
+    }
+
+    if(bannerTimer > 0){
+      bannerTimer--;
+      const alpha = bannerTimer > 20 ? 1 : bannerTimer/20;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = 'rgba(5,7,20,0.5)';
+      ctx.fillRect(0, H/2-26, W, 52);
+      ctx.fillStyle = currentTheme().accent;
+      ctx.font = 'bold 20px monospace';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = currentTheme().accent;
+      ctx.shadowBlur = 14;
+      ctx.fillText(bannerText, W/2, H/2+7);
+      ctx.restore();
+    }
+
     frame++;
   }
 
@@ -581,8 +815,10 @@
     }
     running = true;
     resetBallOnPaddle();
+    particles = [];
     updateHud();
     overlay.classList.add('hidden');
+    showBanner(currentTheme().name);
   }
   startBtn.addEventListener('click', startGame);
 
