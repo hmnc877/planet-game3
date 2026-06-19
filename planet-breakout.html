@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>惑星ブロック崩し</title>
+<style>
+  :root{
+    --bg-deep:#0a0e27;
+    --bg-deep2:#050714;
+    --purple:#6c4adb;
+    --pink:#ff5fa2;
+    --cyan:#4ad4ff;
+    --gold:#ffc94a;
+    --green:#36e2a0;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none; }
+  html,body{
+    margin:0; padding:0; height:100%; overflow:hidden;
+    background:var(--bg-deep2);
+    font-family:'Courier New', monospace;
+    touch-action:none;
+  }
+  #wrap{
+    position:fixed; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    background:
+      radial-gradient(circle at 20% 10%, rgba(108,74,219,0.25), transparent 40%),
+      radial-gradient(circle at 80% 90%, rgba(255,95,162,0.18), transparent 40%),
+      var(--bg-deep2);
+  }
+  #stage{ position:relative; }
+  canvas{
+    display:block;
+    border-radius:18px;
+    box-shadow:0 0 0 1px rgba(255,255,255,0.08), 0 20px 60px rgba(0,0,0,0.6), 0 0 80px rgba(108,74,219,0.15);
+    background:var(--bg-deep);
+  }
+  #hud{
+    position:absolute; top:14px; left:0; right:0;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding:0 18px;
+    color:#dfe6ff;
+    pointer-events:none;
+    letter-spacing:1px;
+  }
+  #score{
+    font-size:22px; font-weight:700; color:var(--gold);
+    text-shadow:0 0 12px rgba(255,201,74,0.6);
+  }
+  #scoreLabel{ font-size:10px; color:#8a93c9; letter-spacing:3px; display:block; margin-bottom:2px;}
+  #balls{
+    font-size:13px; color:var(--cyan); text-align:right;
+    text-shadow:0 0 8px rgba(74,212,255,0.5);
+  }
+  #ballsLabel{ font-size:10px; color:#8a93c9; letter-spacing:3px; display:block; margin-bottom:2px;}
+  #msgOverlay{
+    position:absolute; inset:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:rgba(5,7,20,0.78);
+    color:#fff; text-align:center; gap:14px;
+    border-radius:18px;
+    transition:opacity 0.3s;
+  }
+  #msgOverlay h1{
+    font-size:24px; margin:0; color:var(--pink);
+    text-shadow:0 0 18px rgba(255,95,162,0.7);
+    letter-spacing:2px;
+  }
+  #msgOverlay p{ margin:0; font-size:13px; color:#aab2e0; max-width:260px; line-height:1.6; }
+  #msgOverlay button{
+    margin-top:10px;
+    background:linear-gradient(135deg, var(--purple), var(--pink));
+    border:none; color:#fff; font-family:inherit; font-weight:700;
+    font-size:14px; letter-spacing:2px;
+    padding:12px 28px; border-radius:30px;
+    box-shadow:0 6px 20px rgba(108,74,219,0.5);
+  }
+  #hint{
+    position:absolute; bottom:8px; left:0; right:0;
+    text-align:center; font-size:10px; color:#5c6499; letter-spacing:1px;
+    pointer-events:none;
+  }
+  .hidden{ display:none !important; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div id="hud">
+      <div><span id="scoreLabel">SCORE</span><span id="score">0</span></div>
+      <div><span id="ballsLabel">BALL</span><span id="balls">●●●</span></div>
+    </div>
+    <div id="msgOverlay">
+      <h1 id="msgTitle">惑星ブロック崩し</h1>
+      <p id="msgText">指で左右にドラッグしてパドルを操作。<br>星座のように散らばったブロックを全部壊そう。<br>壊すと中から惑星が現れる！</p>
+      <button id="startBtn">START</button>
+    </div>
+    <div id="hint">パドルをドラッグして操作</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // ---- Layout ----
+  const W = 380, H = 680;
+  function resize(){
+    const scale = Math.min(window.innerWidth / W, window.innerHeight / H, 1.0) * 0.96;
+    canvas.style.width = (W*scale)+'px';
+    canvas.style.height = (H*scale)+'px';
+  }
+  canvas.width = W; canvas.height = H;
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- Game state ----
+  let score = 0;
+  let ballsLeft = 3;
+  let running = false;
+  let level = 1;
+
+  const scoreEl = document.getElementById('score');
+  const ballsEl = document.getElementById('balls');
+  const overlay = document.getElementById('msgOverlay');
+  const msgTitle = document.getElementById('msgTitle');
+  const msgText = document.getElementById('msgText');
+  const startBtn = document.getElementById('startBtn');
+
+  function updateHud(){
+    scoreEl.textContent = score.toString().padStart(5,'0');
+    ballsEl.textContent = '●'.repeat(Math.max(ballsLeft-1,0)) + (ballsLeft>0?'○':'');
+  }
+
+  // ---- Playfield bounds ----
+  const margin = 14;
+  const playLeft = margin, playRight = W - margin, playTop = 60, playBottom = H - 16;
+
+  // ---- Paddle ----
+  const paddle = {
+    w: 70, h: 12,
+    x: W/2 - 35, y: H - 70,
+    minX: playLeft, maxX: playRight - 70
+  };
+
+  // ---- Ball ----
+  function freshBall(){
+    return {
+      x: W/2, y: paddle.y - 14,
+      vx: 3.2 * (Math.random() < 0.5 ? -1 : 1),
+      vy: -6.2,
+      r: 7,
+      trail: [],
+      launched: false
+    };
+  }
+  let ball = freshBall();
+
+  // ---- Planet palette (revealed when a brick breaks) ----
+  const planetSkins = [
+    { color:'#ff5fa2', ring:false },
+    { color:'#4ad4ff', ring:true  },
+    { color:'#ffc94a', ring:false },
+    { color:'#6c4adb', ring:true  },
+    { color:'#36e2a0', ring:false },
+    { color:'#ff9f4a', ring:true  },
+  ];
+
+  // ---- Bricks: scattered constellation-style layout ----
+  // Instead of a rigid grid, place bricks at irregular positions that still
+  // avoid overlap, like stars sketched into a constellation.
+  let bricks = [];
+  function generateBricks(){
+    bricks = [];
+    const zoneTop = playTop + 14;
+    const zoneBottom = 300;
+    const brickW = 34, brickH = 16;
+    const count = 26 + Math.min(level*2, 14);
+    const placed = [];
+    let attempts = 0;
+    while(placed.length < count && attempts < count*40){
+      attempts++;
+      const x = playLeft + 6 + Math.random()*(playRight - playLeft - brickW - 12);
+      const y = zoneTop + Math.random()*(zoneBottom - zoneTop - brickH);
+      // reject if overlapping an existing brick (with padding)
+      let ok = true;
+      for(const b of placed){
+        if(x < b.x + brickW + 6 && x + brickW + 6 > b.x &&
+           y < b.y + brickH + 6 && y + brickH + 6 > b.y){
+          ok = false; break;
+        }
+      }
+      if(!ok) continue;
+      const skin = planetSkins[Math.floor(Math.random()*planetSkins.length)];
+      placed.push({
+        x, y, w: brickW, h: brickH,
+        alive: true,
+        hp: Math.random() < 0.18 ? 2 : 1,
+        skin,
+        reveal: 0 // 0..1, drives the "planet pops out" flash animation
+      });
+    }
+    bricks = placed;
+  }
+  generateBricks();
+
+  // faint constellation lines connecting nearby bricks (purely decorative)
+  function constellationLines(){
+    const lines = [];
+    for(let i=0;i<bricks.length;i++){
+      let nearest = null, nd = Infinity;
+      for(let j=0;j<bricks.length;j++){
+        if(i===j) continue;
+        const a = bricks[i], b = bricks[j];
+        const dx=(a.x+a.w/2)-(b.x+b.w/2), dy=(a.y+a.h/2)-(b.y+b.h/2);
+        const d = dx*dx+dy*dy;
+        if(d < nd){ nd = d; nearest = j; }
+      }
+      if(nearest !== null && nd < 80*80){
+        lines.push([i, nearest]);
+      }
+    }
+    return lines;
+  }
+  let conLines = constellationLines();
+
+  // ---- Input: drag paddle ----
+  // Pointer Events unify touch/mouse/pen into one API. This matters because
+  // some embedded viewers (e.g. opening the file directly from a phone's
+  // Files app) run a stripped-down WebView where touchstart/touchmove don't
+  // always fire reliably, but pointer events are far more consistently
+  // supported across these contexts.
+  let activeId = null;
+  canvas.style.touchAction = 'none';
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
+
+  function canvasPoint(clientX, clientY){
+    const rect = canvas.getBoundingClientRect();
+    const sx = W / rect.width, sy = H / rect.height;
+    return { x: (clientX - rect.left)*sx, y: (clientY - rect.top)*sy };
+  }
+
+  function movePaddleTo(x){
+    paddle.x = Math.max(paddle.minX, Math.min(paddle.maxX, x - paddle.w/2));
+    if(!ball.launched){
+      ball.x = paddle.x + paddle.w/2;
+    }
+  }
+
+  function onPointerDown(e){
+    e.preventDefault();
+    activeId = e.pointerId;
+    if(canvas.setPointerCapture){
+      try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
+    }
+    const p = canvasPoint(e.clientX, e.clientY);
+    movePaddleTo(p.x);
+    if(!running) return;
+    if(!ball.launched) ball.launched = true;
+  }
+  function onPointerMove(e){
+    if(e.pointerId !== activeId) return;
+    e.preventDefault();
+    movePaddleTo(canvasPoint(e.clientX, e.clientY).x);
+  }
+  function onPointerUp(e){
+    if(e.pointerId !== activeId) return;
+    activeId = null;
+  }
+
+  // Last-resort fallback: if some restricted viewer doesn't dispatch pointer
+  // events at all, a basic click at least lets the player launch the ball
+  // and nudge the paddle toward the tapped X position.
+  canvas.addEventListener('click', function(e){
+    const p = canvasPoint(e.clientX, e.clientY);
+    movePaddleTo(p.x);
+    if(running && !ball.launched) ball.launched = true;
+  });
+
+  // ---- Physics ----
+  function addScore(pts){
+    score += pts;
+    updateHud();
+  }
+
+  function resetBallOnPaddle(){
+    ball = freshBall();
+  }
+
+  function ballLost(){
+    ballsLeft--;
+    updateHud();
+    if(ballsLeft <= 0){
+      running = false;
+      msgTitle.textContent = 'GAME OVER';
+      msgText.innerHTML = `スコア: <b style="color:#ffc94a">${score}</b><br>もう一度挑戦しよう！`;
+      startBtn.textContent = 'RETRY';
+      overlay.classList.remove('hidden');
+    } else {
+      resetBallOnPaddle();
+    }
+  }
+
+  function levelClear(){
+    running = false;
+    level++;
+    msgTitle.textContent = 'CLEAR!';
+    msgText.innerHTML = `スコア: <b style="color:#ffc94a">${score}</b><br>次の星座へ進もう`;
+    startBtn.textContent = 'NEXT';
+    overlay.classList.remove('hidden');
+  }
+
+  function rectCircleCollide(b, ball){
+    const cx = Math.max(b.x, Math.min(ball.x, b.x+b.w));
+    const cy = Math.max(b.y, Math.min(ball.y, b.y+b.h));
+    const dx = ball.x - cx, dy = ball.y - cy;
+    const dist = Math.hypot(dx,dy);
+    if(dist < ball.r){
+      // determine bounce axis by penetration depth
+      const overlapX = Math.min(ball.x + ball.r - b.x, b.x + b.w - (ball.x - ball.r));
+      const overlapY = Math.min(ball.y + ball.r - b.y, b.y + b.h - (ball.y - ball.r));
+      if(overlapX < overlapY){
+        ball.vx *= -1;
+        ball.x += ball.x < b.x + b.w/2 ? -overlapX : overlapX;
+      } else {
+        ball.vy *= -1;
+        ball.y += ball.y < b.y + b.h/2 ? -overlapY : overlapY;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function update(){
+    if(!running) return;
+
+    if(!ball.launched){
+      ball.x = paddle.x + paddle.w/2;
+      ball.y = paddle.y - 14;
+      return;
+    }
+
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+
+    ball.trail.push({x:ball.x, y:ball.y});
+    if(ball.trail.length > 12) ball.trail.shift();
+
+    // walls
+    if(ball.x - ball.r < playLeft){ ball.x = playLeft + ball.r; ball.vx *= -1; }
+    if(ball.x + ball.r > playRight){ ball.x = playRight - ball.r; ball.vx *= -1; }
+    if(ball.y - ball.r < playTop){ ball.y = playTop + ball.r; ball.vy *= -1; }
+
+    // paddle
+    if(ball.vy > 0 &&
+       ball.y + ball.r > paddle.y && ball.y + ball.r < paddle.y + paddle.h + 10 &&
+       ball.x > paddle.x - ball.r && ball.x < paddle.x + paddle.w + ball.r){
+      ball.y = paddle.y - ball.r;
+      // angle depends on where it hit the paddle
+      const hitPos = (ball.x - (paddle.x + paddle.w/2)) / (paddle.w/2); // -1..1
+      const speed = Math.hypot(ball.vx, ball.vy);
+      const maxAngle = Math.PI/3; // 60deg
+      const angle = hitPos * maxAngle;
+      ball.vx = speed * Math.sin(angle);
+      ball.vy = -Math.abs(speed * Math.cos(angle));
+      // slight speed increase to keep things lively, capped
+      const newSpeed = Math.min(speed * 1.03, 11);
+      const s2 = Math.hypot(ball.vx, ball.vy);
+      ball.vx = ball.vx/s2*newSpeed;
+      ball.vy = ball.vy/s2*newSpeed;
+    }
+
+    // bricks
+    for(const b of bricks){
+      if(!b.alive) continue;
+      if(rectCircleCollide(b, ball)){
+        b.hp--;
+        if(b.hp <= 0){
+          b.alive = false;
+          b.reveal = 1; // trigger planet pop animation
+          addScore(b.skin.ring ? 150 : 100);
+        } else {
+          addScore(40);
+        }
+        break; // one brick per frame keeps response predictable
+      }
+    }
+    for(const b of bricks){
+      if(b.reveal > 0) b.reveal = Math.max(0, b.reveal - 0.018);
+    }
+
+    // lost
+    if(ball.y - ball.r > playBottom){
+      ballLost();
+      return;
+    }
+
+    // win check
+    if(bricks.every(b => !b.alive)){
+      levelClear();
+    }
+  }
+
+  // ---- Drawing ----
+  let frame = 0;
+  function drawBackground(){
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = '#0a0e27';
+    ctx.fillRect(0,0,W,H);
+    for(let i=0;i<70;i++){
+      const sx = (i*53.7)%W;
+      const sy = (i*97.3 + (i*13)%40)%H;
+      const tw = 0.4 + 0.6*Math.abs(Math.sin(i*12.9 + frame*0.02));
+      ctx.fillStyle = `rgba(255,255,255,${0.15+0.35*tw})`;
+      ctx.fillRect(sx, sy, 1.4, 1.4);
+    }
+  }
+
+  function drawBounds(){
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(playLeft, playTop);
+    ctx.lineTo(playRight, playTop);
+    ctx.moveTo(playLeft, playTop);
+    ctx.lineTo(playLeft, H);
+    ctx.moveTo(playRight, playTop);
+    ctx.lineTo(playRight, H);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawConstellation(){
+    ctx.save();
+    ctx.strokeStyle = 'rgba(108,74,219,0.18)';
+    ctx.lineWidth = 1;
+    for(const [i,j] of conLines){
+      const a = bricks[i], b = bricks[j];
+      if(!a.alive && !b.alive) continue;
+      ctx.beginPath();
+      ctx.moveTo(a.x+a.w/2, a.y+a.h/2);
+      ctx.lineTo(b.x+b.w/2, b.y+b.h/2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawBrick(b){
+    if(b.alive){
+      ctx.save();
+      const cx = b.x+b.w/2, cy = b.y+b.h/2;
+      ctx.fillStyle = b.hp > 1 ? '#dfe6ff' : 'rgba(255,255,255,0.85)';
+      ctx.shadowColor = b.skin.color;
+      ctx.shadowBlur = 6;
+      const r = 4;
+      ctx.beginPath();
+      ctx.moveTo(b.x+r, b.y);
+      ctx.arcTo(b.x+b.w, b.y, b.x+b.w, b.y+b.h, r);
+      ctx.arcTo(b.x+b.w, b.y+b.h, b.x, b.y+b.h, r);
+      ctx.arcTo(b.x, b.y+b.h, b.x, b.y, r);
+      ctx.arcTo(b.x, b.y, b.x+b.w, b.y, r);
+      ctx.closePath();
+      ctx.fill();
+      if(b.hp > 1){
+        ctx.fillStyle = b.skin.color;
+        ctx.font = 'bold 9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(b.hp, cx, cy+3);
+      }
+      ctx.restore();
+    } else if(b.reveal > 0){
+      // planet pop-out flash: scales up then fades
+      const t = b.reveal; // 1 -> 0
+      const cx = b.x + b.w/2, cy = b.y + b.h/2;
+      const scale = 1 + (1-t)*0.6;
+      const alpha = t;
+      const pr = (b.w*0.42) * scale;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      const grad = ctx.createRadialGradient(cx,cy,1, cx,cy,pr*1.8);
+      grad.addColorStop(0, b.skin.color);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, pr*1.8, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.fillStyle = b.skin.color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, pr, 0, Math.PI*2);
+      ctx.fill();
+
+      if(b.skin.ring){
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, pr*1.5, pr*0.5, -0.4, 0, Math.PI*2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawPaddle(){
+    ctx.save();
+    ctx.fillStyle = '#4ad4ff';
+    ctx.shadowColor = '#4ad4ff';
+    ctx.shadowBlur = 10;
+    const r = 6;
+    ctx.beginPath();
+    ctx.moveTo(paddle.x+r, paddle.y);
+    ctx.arcTo(paddle.x+paddle.w, paddle.y, paddle.x+paddle.w, paddle.y+paddle.h, r);
+    ctx.arcTo(paddle.x+paddle.w, paddle.y+paddle.h, paddle.x, paddle.y+paddle.h, r);
+    ctx.arcTo(paddle.x, paddle.y+paddle.h, paddle.x, paddle.y, r);
+    ctx.arcTo(paddle.x, paddle.y, paddle.x+paddle.w, paddle.y, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBall(){
+    for(let i=0;i<ball.trail.length;i++){
+      const t = ball.trail[i];
+      const alpha = (i/ball.trail.length)*0.4;
+      ctx.fillStyle = `rgba(255,201,74,${alpha})`;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, ball.r*0.7, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.save();
+    ctx.shadowColor = '#fff7d6';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#fff7d6';
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function draw(){
+    drawBackground();
+    drawBounds();
+    drawConstellation();
+    for(const b of bricks) drawBrick(b);
+    drawPaddle();
+    if(running) drawBall();
+
+    if(running && !ball.launched){
+      ctx.save();
+      ctx.fillStyle = 'rgba(74,212,255,0.55)';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('TAP TO LAUNCH', W/2, paddle.y - 30);
+      ctx.restore();
+    }
+    frame++;
+  }
+
+  function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // ---- Start / Reset ----
+  function startGame(){
+    if(startBtn.textContent === 'NEXT'){
+      generateBricks();
+      conLines = constellationLines();
+    } else {
+      score = 0; ballsLeft = 3; level = 1;
+      generateBricks();
+      conLines = constellationLines();
+    }
+    running = true;
+    resetBallOnPaddle();
+    updateHud();
+    overlay.classList.add('hidden');
+  }
+  startBtn.addEventListener('click', startGame);
+
+  updateHud();
+  loop();
+})();
+</script>
+</body>
+</html>
